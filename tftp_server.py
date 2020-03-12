@@ -53,18 +53,21 @@ class TftpProcessor(object):
         self.port = 69 ### 69 for the server not for client!
         self.root_path = '//'
         self.client_address = None
+        self.client_port = 0
+        self.file_path = ''
         self.file_block_count = 0
-        self.last_block_num = b'00'# takes 2 bytes
+        self.last_block_num = b'00'# takes 2 bytes 
         self.blocks_transferred = 0
         self.fail = False
-        self.ignore_current_packed = False
-        #self.tftp_mode = 'octet' # i choose it as default mode or whatever
-        self.request_type = None # Upload to client  or Download to client?
-        self.server_address = '127.0.0.1'
-        
+        self.ignore_current_packet = False #ignore it if received packet's source is adifferent prot no
+        self.tftp_mode = 'octet' # i choose it as default mode or whatever
+        self.request_mode = None # 'RRQ' or 'WRQ'
+        self.server_address = ('127.0.0.1', 69)
+        self.file_bytes = []
+        self.reached_end = False
         # self.client_socket = None, WRONG!
         self.packet_buffer = []
-        pass
+        
 
     def process_udp_packet(self, packet_data, packet_source):#is packet source an adress or what
         """
@@ -76,7 +79,10 @@ class TftpProcessor(object):
         # add the packet to be sent to self.packet_buffer
         # feel free to remove this line
         print(f"Received a packet from {packet_source}")
+        self.ignore_current_packet = False
         in_packet = self._parse_udp_packet(packet_data)
+        if self.ignore_current_packet:
+            return 
         out_packet = self._do_some_logic(in_packet)
 
         # This shouldn't change.
@@ -88,13 +94,68 @@ class TftpProcessor(object):
         the type of the packet and extract other available
         information.
         """
-        pass
+        format = '!H'
+        src_port = struct.unpack('!H', packet_bytes[0:2])
+        if src_port != self.client_port:#ignore stray packets
+            self.ignore_current_packet = True
+            return 0
+        dest_port = struct.unpack('!H', packet_bytes[2:4])[0]
+        len = struct.unpack('!H', packet_bytes[4:6])[0]
+        checksum = struct.unpack('!H', packet_bytes[6:8])[0]
+        
+        return packet_bytes[8:]
 
     def _do_some_logic(self, input_packet):
         """
         Example of a private function that does some logic.
         """
-        pass
+        # input_packet is the data bytes in the udp packet
+        opcode = struct.unpack('!H', input_packet[0:2])[0]
+        packetTypes = { 1: 'RRQ', 2:'WRQ', 3:'DATA', 4:'ACK', 5:'ERROR'}
+        curr_pack_type = packetTypes[opcode]
+        filename = ''
+        out_packet = None
+        if opcode == 1 or opcode == 2: ##RRQ
+            
+            seperator_idx = input_packet.find(0)
+            filename_bytes = input_packet[2:seperator_idx]
+            fmt_str = '!{}s'.format(len(filename_bytes)) #seperator_idx
+            self.file_path = struct.unpack(fmt_str, filename_bytes)
+            # dont need 
+            pass
+        if opcode == 1: ##RRQ
+            #reply with Data Block #1
+            #data packet with opcode = 3, block # = 1
+            out_packet = struct.pack('!HH', 3,1) 
+            
+        elif opcode == 2:##WRQ
+            out_packet = struct.pack('!HH',4,0)
+        elif opcode == 3:# Data
+            block_num = struct.pack('!H', input_packet[2:4])
+            if len(input_packet) > 4:#last data packet can have 0 bytes in data
+                len_data = len(input_packet[4:])
+                if len_data != 512:
+                    self.reach_end = True
+                if self.tftp_mode == 'octet':
+                    fmt_str = '!{}B'.format(len_data)
+                else: # netascii
+                    fmt_str = '!{}s'.format(len_data)
+                unpacked_data_bytes = struct.unpack(fmt_str, input_packet[4:])
+                
+                self.file_bytes.extend(unpacked_data_bytes)
+            else: #reached end of transmission
+                self.reached_end = True
+            out_packet = struct.pack('!HH',3,block_num)
+            
+        elif opcode == 3:#ACK
+            pass
+            # send next data packet
+            #out_packet = getnext 512 bytes from file
+        
+        elif opcode == 5:
+            pass
+
+        return out_packet
 
     def get_next_output_packet(self):
         """
@@ -120,7 +181,9 @@ class TftpProcessor(object):
     def _form_packet(self, packet_type, data=None):
         pass
 
-
+    def get_request_mode(self):
+        self.reached_end = False
+        return self.request_mode
     def request_file(self, file_path_on_server):
         """
         This method is only valid if you're implementing
@@ -141,6 +204,11 @@ class TftpProcessor(object):
         implementing a server.
         """
         pass
+    def set_client_address(self, client_address):
+        self.client_address = client_address
+        #client port needed for 
+
+        self.client_port =  client_address[1]
 
 
 def check_file_name():
@@ -230,9 +298,30 @@ def main():
 
     # Modify this as needed.
     parse_user_input(ip_address, operation, file_name)
-
-    client_socket = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
     tftp_proc = TftpProcessor()
+    server_socket = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+    server_socket.bind(("127.0.0.1", 69))
+    while True: # keep listening
+        
+        print('WAITING!')
+        request_packet ,client_address = server_socket.recv(2048)
+        tftp_proc.set_client_address(client_address)
+        tftp_proc.process_udp_packet(request_packet, client_address)
+        request_mode = tftp_proc.get_request_mode()
+        
+        if request_mode == 'RRQ':
+
+            while tftp_proc.has_pending_packets_to_be_sent():
+                pass
+        elif request_mode == 'WRQ':
+            while tftp_proc.has_pending_packets_to_be_sent():
+                pass
+        else:
+            print('ERROR!')
+
+
+
+    
 
 
 
