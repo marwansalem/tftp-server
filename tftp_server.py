@@ -35,7 +35,12 @@ class TftpProcessor(object):
         Represents a TFTP packet type add the missing types here and
         modify the existing values as necessary.
         """
+        # tftp supports 5 packet types,with corresponding opodes should be two bytes
         RRQ = 1
+        WRQ = 2
+        DATA = 3
+        ACK = 4
+        ERROR = 5
 
     def __init__(self):
         """
@@ -44,10 +49,24 @@ class TftpProcessor(object):
 
         Here's an example of what you can do inside this function.
         """
+        # define port, but should 
+        self.port = 69 ### 69 for the server not for client!
+        self.root_path = '//'
+        self.client_address = None
+        self.file_block_count = 0
+        self.last_block_num = b'00'# takes 2 bytes
+        self.blocks_transferred = 0
+        self.fail = False
+        self.ignore_current_packed = False
+        #self.tftp_mode = 'octet' # i choose it as default mode or whatever
+        self.request_type = None # Upload to client  or Download to client?
+        self.server_address = '127.0.0.1'
+        
+        # self.client_socket = None, WRONG!
         self.packet_buffer = []
         pass
 
-    def process_udp_packet(self, packet_data, packet_source):
+    def process_udp_packet(self, packet_data, packet_source):#is packet source an adress or what
         """
         Parse the input packet, execute your logic according to that packet.
         packet data is a bytearray, packet source contains the address
@@ -63,7 +82,7 @@ class TftpProcessor(object):
         # This shouldn't change.
         self.packet_buffer.append(out_packet)
 
-    def _parse_udp_packet(self, packet_bytes):
+    def _parse_udp_packet(self, packet_bytes):# is it a byte or bytearray?
         """
         You'll use the struct module here to determine
         the type of the packet and extract other available
@@ -85,7 +104,7 @@ class TftpProcessor(object):
 
         For example;
         s_socket.send(tftp_processor.get_next_output_packet())
-
+        
         Leave this function as is.
         """
         return self.packet_buffer.pop(0)
@@ -98,6 +117,10 @@ class TftpProcessor(object):
         """
         return len(self.packet_buffer) != 0
 
+    def _form_packet(self, packet_type, data=None):
+        pass
+
+
     def request_file(self, file_path_on_server):
         """
         This method is only valid if you're implementing
@@ -106,6 +129,7 @@ class TftpProcessor(object):
         accept is the file name. Remove this function if you're
         implementing a server.
         """
+        #return 
         pass
 
     def upload_file(self, file_path_on_server):
@@ -135,7 +159,9 @@ def setup_sockets(address):
 
     Feel free to delete this function.
     """
-    pass
+    return socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+
+    #pass
 
 
 def do_socket_logic():
@@ -204,6 +230,10 @@ def main():
 
     # Modify this as needed.
     parse_user_input(ip_address, operation, file_name)
+
+    client_socket = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+    tftp_proc = TftpProcessor()
+
 
 
 if __name__ == "__main__":
