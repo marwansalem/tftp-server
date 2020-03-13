@@ -2,7 +2,8 @@
 import sys
 import os
 import enum
-
+import socket
+import struct
 
 class TftpProcessor(object):
     """
@@ -81,10 +82,11 @@ class TftpProcessor(object):
         print(f"Received a packet from {packet_source}")
         self.ignore_current_packet = False
         in_packet = self._parse_udp_packet(packet_data)
+        print('in_p:',in_packet)
         if self.ignore_current_packet:
             return 
         out_packet = self._do_some_logic(in_packet)
-
+        print('out_p:',out_packet)
         # This shouldn't change.
         self.packet_buffer.append(out_packet)
 
@@ -94,17 +96,17 @@ class TftpProcessor(object):
         the type of the packet and extract other available
         information.
         """
-        format = '!H'
-        src_port = struct.unpack('!H', packet_bytes[0:2])
-        if src_port != self.client_port:#ignore stray packets
-            self.ignore_current_packet = True
-            return 0
-        dest_port = struct.unpack('!H', packet_bytes[2:4])[0]
-        len = struct.unpack('!H', packet_bytes[4:6])[0]
-        checksum = struct.unpack('!H', packet_bytes[6:8])[0]
+        # format = '!H'
+        # src_port = struct.unpack('!H', packet_bytes[0:2])[0]
+        # if src_port != self.client_port:#ignore stray packets
+        #     self.ignore_current_packet = True
+        #     return 0
+        # dest_port = struct.unpack('!H', packet_bytes[2:4])[0]
+        # len = struct.unpack('!H', packet_bytes[4:6])[0]
+        # checksum = struct.unpack('!H', packet_bytes[6:8])[0]
         
-        return packet_bytes[8:]
-
+        return packet_bytes
+    
     def _do_some_logic(self, input_packet):
         """
         Example of a private function that does some logic.
@@ -115,12 +117,16 @@ class TftpProcessor(object):
         curr_pack_type = packetTypes[opcode]
         filename = ''
         out_packet = None
+        print(opcode)
         if opcode == 1 or opcode == 2: ##RRQ
-            
-            seperator_idx = input_packet.find(0)
+            self.request_mode = packetTypes[opcode]
+            seperator_idx = 2 + input_packet[2:].find(0)
+            # + 2 because the index returned from find is relative to start index 2:
             filename_bytes = input_packet[2:seperator_idx]
+            
             fmt_str = '!{}s'.format(len(filename_bytes)) #seperator_idx
-            self.file_path = struct.unpack(fmt_str, filename_bytes)
+            self.file_path = struct.unpack(fmt_str, filename_bytes)[0]
+            print(filename_bytes,'zz')
             # dont need 
             pass
         if opcode == 1: ##RRQ
@@ -131,21 +137,26 @@ class TftpProcessor(object):
         elif opcode == 2:##WRQ
             out_packet = struct.pack('!HH',4,0)
         elif opcode == 3:# Data
-            block_num = struct.pack('!H', input_packet[2:4])
+            block_num = struct.unpack('!H', input_packet[2:4])[0]
+            
             if len(input_packet) > 4:#last data packet can have 0 bytes in data
                 len_data = len(input_packet[4:])
                 if len_data != 512:
-                    self.reach_end = True
+                    self.reached_end = True
                 if self.tftp_mode == 'octet':
                     fmt_str = '!{}B'.format(len_data)
                 else: # netascii
                     fmt_str = '!{}s'.format(len_data)
+                print(input_packet[4:],'==')
                 unpacked_data_bytes = struct.unpack(fmt_str, input_packet[4:])
-                
+                print(unpacked_data_bytes)
+        
+                #print('db',len(unpacked_data_bytes),'--', unpacked_data_bytes)
                 self.file_bytes.extend(unpacked_data_bytes)
             else: #reached end of transmission
                 self.reached_end = True
-            out_packet = struct.pack('!HH',3,block_num)
+            
+            out_packet = struct.pack('!HH',3 , block_num)
             
         elif opcode == 3:#ACK
             pass
@@ -156,6 +167,11 @@ class TftpProcessor(object):
             pass
 
         return out_packet
+
+    def ignore_current(self):
+        return self.ignore_current_packet
+    
+    
 
     def get_next_output_packet(self):
         """
@@ -177,13 +193,17 @@ class TftpProcessor(object):
         Leave this function as is.
         """
         return len(self.packet_buffer) != 0
-
+    def save_file(self):
+        with open(self.file_path, 'wb') as up_file:
+            up_file.write(bytes(self.file_bytes))
     def _form_packet(self, packet_type, data=None):
         pass
 
     def get_request_mode(self):
         self.reached_end = False
         return self.request_mode
+    def transmission_ended(self):
+        return self.reached_end
     def request_file(self, file_path_on_server):
         """
         This method is only valid if you're implementing
@@ -194,7 +214,7 @@ class TftpProcessor(object):
         """
         #return 
         pass
-
+    
     def upload_file(self, file_path_on_server):
         """
         This method is only valid if you're implementing
@@ -282,40 +302,53 @@ def main():
      Write your code above this function.
     if you need the command line arguments
     """
-    print("*" * 50)
-    print("[LOG] Printing command line arguments\n", ",".join(sys.argv))
-    check_file_name()
-    print("*" * 50)
+    #print("*" * 50)
+    #print("[LOG] Printing command line arguments\n", ",".join(sys.argv))
+    #check_file_name()
+    #print("*" * 50)
 
     # This argument is required.
     # For a server, this means the IP that the server socket
     # will use.
     # The IP of the server, some default values
     # are provided. Feel free to modify them.
-    ip_address = get_arg(1, "127.0.0.1")
-    operation = get_arg(2, "pull")
-    file_name = get_arg(3, "test.txt")
+    #ip_address = get_arg(1, "127.0.0.1")
+    #operation = get_arg(2, "pull")
+    #file_name = get_arg(3, "test.txt")
 
     # Modify this as needed.
-    parse_user_input(ip_address, operation, file_name)
+    #parse_user_input(ip_address, operation, file_name)
     tftp_proc = TftpProcessor()
     server_socket = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
     server_socket.bind(("127.0.0.1", 69))
-    while True: # keep listening
+    if True: #change it to while after debugging
         
         print('WAITING!')
-        request_packet ,client_address = server_socket.recv(2048)
+        request_packet ,client_address = server_socket.recvfrom(2048)
         tftp_proc.set_client_address(client_address)
+        print('REQUEST pack:', request_packet)
         tftp_proc.process_udp_packet(request_packet, client_address)
         request_mode = tftp_proc.get_request_mode()
-        
-        if request_mode == 'RRQ':
+        print(request_mode)
+        if request_mode == 'RRQ' or request_mode == 'WRQ':
+            print('Connecting')
+            
+            while tftp_proc.has_pending_packets_to_be_sent() :
+                next_packet = tftp_proc.get_next_output_packet()
+                server_socket.sendto(next_packet,client_address)
+                if not tftp_proc.transmission_ended():
+                    received_packet ,received_client = server_socket.recvfrom(2048)
+                    tftp_proc.process_udp_packet(received_packet, received_client)
+                else:
+                    print('TRANSMISSION ENDED')
+                while tftp_proc.ignore_current():
+                    received_packet ,received_client = server_socket.recvfrom(2048)
+                    tftp_proc.process_udp_packet(received_packet, received_client)
+            print(tftp_proc.file_bytes)
+            print(tftp_proc.file_path)
+            print(bytes(tftp_proc.file_bytes))
+            tftp_proc.save_file()
 
-            while tftp_proc.has_pending_packets_to_be_sent():
-                pass
-        elif request_mode == 'WRQ':
-            while tftp_proc.has_pending_packets_to_be_sent():
-                pass
         else:
             print('ERROR!')
 
