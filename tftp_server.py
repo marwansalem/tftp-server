@@ -4,6 +4,7 @@ import os
 import enum
 import socket
 import struct
+import time
 
 class TftpProcessor(object):
     """
@@ -57,9 +58,10 @@ class TftpProcessor(object):
         self.client_port = 0
         self.file_path = ''
         self.file_block_count = 0
-        self.last_block_num = b'00'# takes 2 bytes 
+        self.last_block_num = 0 # takes 2 bytes 
         self.blocks_transferred = 0
         self.fail = False
+        self.sent_last = False
         self.ignore_current_packet = False #ignore it if received packet's source is adifferent prot no
         self.tftp_mode = 'octet' # i choose it as default mode or whatever
         self.request_mode = None # 'RRQ' or 'WRQ'
@@ -80,14 +82,16 @@ class TftpProcessor(object):
         # add the packet to be sent to self.packet_buffer
         # feel free to remove this line
         print(f"Received a packet from {packet_source}")
+        #print('rec:',packet_data)
         self.ignore_current_packet = False
         in_packet = self._parse_udp_packet(packet_data)
-        print('in_p:',in_packet)
         if self.ignore_current_packet:
             return 
         out_packet = self._do_some_logic(in_packet)
-        print('out_p:',out_packet)
+        if out_packet == []: # last packet in file acknowledged
+            return 
         # This shouldn't change.
+        #print('sending:',out_packet)
         self.packet_buffer.append(out_packet)
 
     def _parse_udp_packet(self, packet_bytes):# is it a byte or bytearray?
@@ -116,62 +120,106 @@ class TftpProcessor(object):
         packetTypes = { 1: 'RRQ', 2:'WRQ', 3:'DATA', 4:'ACK', 5:'ERROR'}
         curr_pack_type = packetTypes[opcode]
         filename = ''
-        out_packet = None
-        print(opcode)
-        if opcode == 1 or opcode == 2: ##RRQ
+        if opcode == 1 or opcode == 2: ##Request packet read or write request
+            #clear file bytes
+            self.file_bytes = []
             self.request_mode = packetTypes[opcode]
             seperator_idx = 2 + input_packet[2:].find(0)
             # + 2 because the index returned from find is relative to start index 2:
             filename_bytes = input_packet[2:seperator_idx]
             
-            fmt_str = '!{}s'.format(len(filename_bytes)) #seperator_idx
+            fmt_str = '!{}s'.format(len(filename_bytes))
             self.file_path = struct.unpack(fmt_str, filename_bytes)[0]
-            print(filename_bytes,'zz')
-            # dont need 
-            pass
+            # mode is always ascii encoded 
+            self.tftp = str(input_packet[seperator_idx+1:-1], 'ascii').lower()
+            #print(self.tftp_mode)
+        
+        if opcode == 4 and self.sent_last: # last packet acknowledged
+            #print('ENDING NOW')
+            self.sent_last = False
+            self.reached_end = True
+            return []
+
         if opcode == 1: ##RRQ
-            #reply with Data Block #1
-            #data packet with opcode = 3, block # = 1
-            out_packet = struct.pack('!HH', 3,1) 
+            err = self.read_file()
+            if err:
+                out_packet = struct.pack('!HH', 5, 1)
+                err_msg = 'File not found.'
+                out_packet += struct.pack('!{}sB'.format(len(err_msg)), err_msg.encode(),0)
+                self.reached_end = True
+                print(err_msg)
+                return out_packet
             
-        elif opcode == 2:##WRQ
+            
+        if opcode == 2 :##WRQ
+            #reply with acknowledge with block num = 0 
             out_packet = struct.pack('!HH',4,0)
         elif opcode == 3:# Data
             block_num = struct.unpack('!H', input_packet[2:4])[0]
-            
+            print(len(input_packet),'--len')
             if len(input_packet) > 4:#last data packet can have 0 bytes in data
                 len_data = len(input_packet[4:])
                 if len_data != 512:
-                    self.reached_end = True
+                    self.sent_last = True
                 if self.tftp_mode == 'octet':
                     fmt_str = '!{}B'.format(len_data)
                 else: # netascii
                     fmt_str = '!{}s'.format(len_data)
-                print(input_packet[4:],'==')
                 unpacked_data_bytes = struct.unpack(fmt_str, input_packet[4:])
-                print(unpacked_data_bytes)
         
                 #print('db',len(unpacked_data_bytes),'--', unpacked_data_bytes)
+                #'append' the bytes of the received block to the file bytes so they can be written after end of transmission
                 self.file_bytes.extend(unpacked_data_bytes)
             else: #reached end of transmission
                 self.reached_end = True
             
-            out_packet = struct.pack('!HH',3 , block_num)
+            out_packet = struct.pack('!HH',4 , block_num)
             
-        elif opcode == 3:#ACK
-            pass
-            # send next data packet
-            #out_packet = getnext 512 bytes from file
-        
         elif opcode == 5:
-            pass
+            self.reached_end = True
+            return struct.pack('!HH{}'.format(len('unknownerr')) ,5 ,0 ,'unknownerr'.encode())
 
+        if opcode == 4 or opcode == 1:# reply to RRQ with first block, and ACK with other blocks
+            if opcode == 1:
+                block_num = 1
+            else:
+                block_num = struct.unpack('!H',input_packet[2:4])[0] + 1
+            #print('bno',block_num)
+            data_blocks = self.get_next_data_block(block_num)
+        
+            len_data = len(data_blocks)    
+            if len_data > 0:
+                format_char = ''
+                if self.tftp_mode == 'octet':
+                    #fmtstr = '!HH{}B'.format(len_data)
+                    format_char = '!B'
+                elif self.tftp_mode == 'netascii':
+                    #fmtstr = '!HH{}s'.format(len_data)
+                    format_char = '!s'
+                ### data_blocks convert to required data type
+                out_packet = struct.pack('!HH', 3, block_num)
+                for byte in list(data_blocks):
+                    out_packet += struct.pack(format_char, byte)
+            else:# if file size %512 == 0 then last data packet will have no data blocks
+                out_packet = struct.pack('!HH',3, block_num  )
+            #print('outdata:',out_packet)
         return out_packet
 
     def ignore_current(self):
         return self.ignore_current_packet
     
-    
+    def get_next_data_block(self, block_num):
+        start_idx = (block_num-1) * 512
+        end_idx = start_idx + 512
+        
+        if end_idx > (self.file_block_count ):# if last block is less than 512 
+            # end of transmission
+            self.reached_end = True
+            return self.file_bytes[start_idx :]
+        elif end_idx == self.file_block_count: #send empty data block in the end(End of Transmission) if file size is multiple of 512
+            return []
+        return self.file_bytes[start_idx: end_idx]
+
 
     def get_next_output_packet(self):
         """
@@ -184,6 +232,7 @@ class TftpProcessor(object):
         
         Leave this function as is.
         """
+        
         return self.packet_buffer.pop(0)
 
     def has_pending_packets_to_be_sent(self):
@@ -194,13 +243,23 @@ class TftpProcessor(object):
         """
         return len(self.packet_buffer) != 0
     def save_file(self):
+        
         with open(self.file_path, 'wb') as up_file:
             up_file.write(bytes(self.file_bytes))
+        
+    def read_file(self):
+        try:
+            with open(self.file_path, 'rb') as f:
+                self.file_bytes = list(f.read())
+                self.file_block_count = len(self.file_bytes)
+            return False
+        except FileNotFoundError:
+            return True
+
     def _form_packet(self, packet_type, data=None):
         pass
 
     def get_request_mode(self):
-        self.reached_end = False
         return self.request_mode
     def transmission_ended(self):
         return self.reached_end
@@ -248,19 +307,6 @@ def setup_sockets(address):
     Feel free to delete this function.
     """
     return socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
-
-    #pass
-
-
-def do_socket_logic():
-    """
-    Example function for some helper logic, in case you
-    want to be tidy and avoid stuffing the main function.
-
-    Feel free to delete this function.
-    """
-    pass
-
 
 def parse_user_input(address, operation, file_name=None):
     # Your socket logic can go here,
@@ -324,33 +370,46 @@ def main():
     if True: #change it to while after debugging
         
         print('WAITING!')
+        # get a packet containging request line
         request_packet ,client_address = server_socket.recvfrom(2048)
         tftp_proc.set_client_address(client_address)
+        print('Connecting')
         print('REQUEST pack:', request_packet)
         tftp_proc.process_udp_packet(request_packet, client_address)
         request_mode = tftp_proc.get_request_mode()
-        print(request_mode)
+        print(tftp_proc.transmission_ended())
+        
         if request_mode == 'RRQ' or request_mode == 'WRQ':
-            print('Connecting')
+            
             
             while tftp_proc.has_pending_packets_to_be_sent() :
+                # send response packet to previously received packet
+                
                 next_packet = tftp_proc.get_next_output_packet()
                 server_socket.sendto(next_packet,client_address)
-                if not tftp_proc.transmission_ended():
+                
+                if not tftp_proc.transmission_ended():# receive the next packet if you did not reach the end of transmission
+                    print('procc')
                     received_packet ,received_client = server_socket.recvfrom(2048)
                     tftp_proc.process_udp_packet(received_packet, received_client)
+                    print(tftp_proc.transmission_ended())
+                    
                 else:
                     print('TRANSMISSION ENDED')
-                while tftp_proc.ignore_current():
+                while tftp_proc.ignore_current():# if stray packet received then ignore it get another packet
                     received_packet ,received_client = server_socket.recvfrom(2048)
                     tftp_proc.process_udp_packet(received_packet, received_client)
-            print(tftp_proc.file_bytes)
+            #print(tftp_proc.file_bytes)
             print(tftp_proc.file_path)
-            print(bytes(tftp_proc.file_bytes))
-            tftp_proc.save_file()
+            print(len(tftp_proc.file_bytes))
+            
+            if request_mode == 'WRQ':
+                tftp_proc.save_file()
+            
 
         else:
             print('ERROR!')
+    time.sleep(2)
 
 
 
