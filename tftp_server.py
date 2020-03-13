@@ -52,6 +52,8 @@ class TftpProcessor(object):
         Here's an example of what you can do inside this function.
         """
         # define port, but should 
+        #self.zz = TftpPacketType.RRQ
+
         self.port = 69 ### 69 for the server not for client!
         self.root_path = '//'
         self.client_address = None
@@ -59,7 +61,7 @@ class TftpProcessor(object):
         self.file_path = ''
         self.file_block_count = 0
         self.last_block_num = 0 # takes 2 bytes 
-        self.blocks_transferred = 0
+        
         self.fail = False
         self.sent_last = False
         self.ignore_current_packet = False #ignore it if received packet's source is adifferent prot no
@@ -81,7 +83,7 @@ class TftpProcessor(object):
         # Add your logic here, after your logic is done,
         # add the packet to be sent to self.packet_buffer
         # feel free to remove this line
-        print(f"Received a packet from {packet_source}")
+        #print(f"Received a packet from {packet_source}")
         #print('rec:',packet_data)
         self.ignore_current_packet = False
         in_packet = self._parse_udp_packet(packet_data)
@@ -120,6 +122,13 @@ class TftpProcessor(object):
         packetTypes = { 1: 'RRQ', 2:'WRQ', 3:'DATA', 4:'ACK', 5:'ERROR'}
         curr_pack_type = packetTypes[opcode]
         filename = ''
+        if opcode > 5 or opcode == 0:
+            self.reached_end = True
+            err_msg = 'Illegal TFTP OPERATION'
+            print(err_msg)
+            # return ERROR Packet with opcode = 5, error code = 4, error message encoded, and a 0 byte
+            return struct.pack('!HH', 5, 4) + struct.pack('!{}sB'.format(len(err_msg)), err_msg.encode(), 0)
+
         if opcode == 1 or opcode == 2: ##Request packet read or write request
             #clear file bytes
             self.file_bytes = []
@@ -143,6 +152,7 @@ class TftpProcessor(object):
         if opcode == 1: ##RRQ
             err = self.read_file()
             if err:
+                ## error code =1 ,, opcode for error = 5
                 out_packet = struct.pack('!HH', 5, 1)
                 err_msg = 'File not found.'
                 out_packet += struct.pack('!{}sB'.format(len(err_msg)), err_msg.encode(),0)
@@ -153,14 +163,25 @@ class TftpProcessor(object):
             
         if opcode == 2 :##WRQ
             #reply with acknowledge with block num = 0 
+            if os.path.exists(self.file_path):
+                error_code = 6
+                out_packet = struct.pack('!HH', 5, 6)
+                err_msg = 'File already exists'
+                out_packet += struct.pack('!{}sB'.format(len(err_msg)), err_msg.encode(),0)
+                self.reached_end = True
+                print(err_msg)
+                return out_packet
+
             out_packet = struct.pack('!HH',4,0)
         elif opcode == 3:# Data
+            #print('in',input_packet)
             block_num = struct.unpack('!H', input_packet[2:4])[0]
-            print(len(input_packet),'--len')
+            
             if len(input_packet) > 4:#last data packet can have 0 bytes in data
                 len_data = len(input_packet[4:])
                 if len_data != 512:
                     self.sent_last = True
+                    self.reached_end = True
                 if self.tftp_mode == 'octet':
                     fmt_str = '!{}B'.format(len_data)
                 else: # netascii
@@ -177,7 +198,10 @@ class TftpProcessor(object):
             
         elif opcode == 5:
             self.reached_end = True
-            return struct.pack('!HH{}'.format(len('unknownerr')) ,5 ,0 ,'unknownerr'.encode())
+            err_msg = 'Not defined :' + str(input_packet[4:-1],encoding='ascii')
+            print(err_msg)
+            # return ERROR Packet with opcode = 5, error code = 0, error message encoded, and a 0 byte
+            return struct.pack('!HH', 5, 0) + struct.pack('!{}sB'.format(len(err_msg)), err_msg.encode(), 0)
 
         if opcode == 4 or opcode == 1:# reply to RRQ with first block, and ACK with other blocks
             if opcode == 1:
@@ -256,38 +280,18 @@ class TftpProcessor(object):
         except FileNotFoundError:
             return True
 
-    def _form_packet(self, packet_type, data=None):
-        pass
 
     def get_request_mode(self):
         return self.request_mode
     def transmission_ended(self):
         return self.reached_end
-    def request_file(self, file_path_on_server):
-        """
-        This method is only valid if you're implementing
-        a TFTP client, since the client requests or uploads
-        a file to/from a server, one of the inputs the client
-        accept is the file name. Remove this function if you're
-        implementing a server.
-        """
-        #return 
-        pass
     
-    def upload_file(self, file_path_on_server):
-        """
-        This method is only valid if you're implementing
-        a TFTP client, since the client requests or uploads
-        a file to/from a server, one of the inputs the client
-        accept is the file name. Remove this function if you're
-        implementing a server.
-        """
-        pass
     def set_client_address(self, client_address):
         self.client_address = client_address
         #client port needed for 
 
         self.client_port =  client_address[1]
+        self.reached_end = False
 
 
 def check_file_name():
@@ -367,17 +371,18 @@ def main():
     tftp_proc = TftpProcessor()
     server_socket = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
     server_socket.bind(("127.0.0.1", 69))
+    print('Server started at',("127.0.0.1", 69) )
     if True: #change it to while after debugging
+        print('Waiting for a connection...')
         
-        print('WAITING!')
         # get a packet containging request line
         request_packet ,client_address = server_socket.recvfrom(2048)
         tftp_proc.set_client_address(client_address)
-        print('Connecting')
-        print('REQUEST pack:', request_packet)
+        print('Connected to ', client_address)
+        #print('REQUEST pack:', request_packet)
         tftp_proc.process_udp_packet(request_packet, client_address)
         request_mode = tftp_proc.get_request_mode()
-        print(tftp_proc.transmission_ended())
+        #print(tftp_proc.transmission_ended())
         
         if request_mode == 'RRQ' or request_mode == 'WRQ':
             
@@ -389,10 +394,11 @@ def main():
                 server_socket.sendto(next_packet,client_address)
                 
                 if not tftp_proc.transmission_ended():# receive the next packet if you did not reach the end of transmission
-                    print('procc')
+                    
                     received_packet ,received_client = server_socket.recvfrom(2048)
+                    #print('PROCESSING')
                     tftp_proc.process_udp_packet(received_packet, received_client)
-                    print(tftp_proc.transmission_ended())
+                    
                     
                 else:
                     print('TRANSMISSION ENDED')
@@ -400,8 +406,8 @@ def main():
                     received_packet ,received_client = server_socket.recvfrom(2048)
                     tftp_proc.process_udp_packet(received_packet, received_client)
             #print(tftp_proc.file_bytes)
-            print(tftp_proc.file_path)
-            print(len(tftp_proc.file_bytes))
+            print('file path on server:', str(tftp_proc.file_path,encoding='ascii'))
+            print(len(tftp_proc.file_bytes), ' bytes transmitted ')
             
             if request_mode == 'WRQ':
                 tftp_proc.save_file()
@@ -409,7 +415,7 @@ def main():
 
         else:
             print('ERROR!')
-    time.sleep(2)
+        time.sleep(1)
 
 
 
