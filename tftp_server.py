@@ -155,6 +155,12 @@ class TftpProcessor(object):
             fmt_str = '!{}s'.format(len(filename_bytes))
             #unpack the bytes and get the file_path from the tuple
             self.file_path = struct.unpack(fmt_str, filename_bytes)[0]
+            #forbidden access to server files!
+            if str(self.file_path, encoding='ascii') == os.path.basename(__file__):
+                self.reached_end = True
+                self.fail = True
+                return self._generate_error_packet(error_code = 0, error_message="Access Forbidden")
+            
             # mode is always ascii encoded 
             self.tftp = str(input_packet[seperator_idx+1:-1], 'ascii').lower()
             #print(self.tftp_mode)
@@ -288,9 +294,9 @@ class TftpProcessor(object):
         """
         return len(self.packet_buffer) != 0
     def save_file(self):
-        
-        with open(self.file_path, 'wb') as up_file:
-            up_file.write(bytes(self.file_bytes))
+        if not self.fail:
+            with open(self.file_path, 'wb') as up_file:
+                up_file.write(bytes(self.file_bytes))
         
     def read_file(self):
         try:
@@ -366,23 +372,19 @@ def main():
      Write your code above this function.
     if you need the command line arguments
     """
-    #print("*" * 50)
-    #print("[LOG] Printing command line arguments\n", ",".join(sys.argv))
-    #check_file_name()
-    #print("*" * 50)
+    print("*" * 50)
+    print("[LOG] Printing command line arguments\n", ",".join(sys.argv))
+    check_file_name()
+    print("*" * 50)
 
     # This argument is required.
     # For a server, this means the IP that the server socket
     # will use.
     # The IP of the server, some default values
-    # are provided. Feel free to modify them.
-    #ip_address = get_arg(1, "127.0.0.1")
-    #operation = get_arg(2, "pull")
-    #file_name = get_arg(3, "test.txt")
-
     # Modify this as needed.
     #parse_user_input(ip_address, operation, file_name)
-    server_address = ("127.0.0.1", 69)
+    ip_address = get_arg(1, "127.0.0.1")
+    server_address = (ip_address, 69)
     server_socket = setup_sockets(server_address)
     
     
